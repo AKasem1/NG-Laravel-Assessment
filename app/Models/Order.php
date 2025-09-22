@@ -21,6 +21,11 @@ class Order extends Model
         'total_amount' => 'decimal:2',
     ];
 
+    public function customer()
+{
+    return $this->belongsTo(Customer::class);
+}
+
     /**
      * Get the order items for the order.
      */
