@@ -17,13 +17,19 @@ class OrderController extends Controller
      */
     public function checkout()
     {
+        // Ensure customer is authenticated
+        if (!Auth::guard('customer')->check()) {
+            return redirect()->route('customer.login')
+                ->with('info', 'Please sign in to proceed with checkout.');
+        }
+    
         $cart = $this->getCart();
         
         if (empty($cart)) {
             return redirect()->route('cart.index')
                 ->with('error', 'Your cart is empty. Add some products before checkout.');
         }
-
+    
         // Get cart items with product details
         $cartItems = collect($cart)->map(function ($item) {
             $product = Product::find($item['product_id']);
@@ -33,9 +39,9 @@ class OrderController extends Controller
                 'subtotal' => $product ? $product->price * $item['quantity'] : 0
             ];
         })->filter(function ($item) {
-            return $item['product'] !== null; // Remove items with deleted products
+            return $item['product'] !== null;
         });
-
+    
         // Validate stock availability for all items
         $stockErrors = [];
         foreach ($cartItems as $item) {
@@ -43,36 +49,44 @@ class OrderController extends Controller
                 $stockErrors[] = $item['product']->name . ' - Only ' . $item['product']->stock_quantity . ' items available';
             }
         }
-
+    
         if (!empty($stockErrors)) {
             return redirect()->route('cart.index')
                 ->with('error', 'Stock issues found: ' . implode(', ', $stockErrors));
         }
-
+    
         $total = $cartItems->sum('subtotal');
-
-        return view('checkout.index', compact('cartItems', 'total'));
+        $customer = Auth::guard('customer')->user();
+    
+        return view('checkout.index', compact('cartItems', 'total', 'customer'));
     }
-
+    
     /**
-     * Process the order (no login required)
+     * Process the order (Customer Authentication Required)
      */
     public function store(Request $request)
     {
-        // Validation as per assessment requirements
+        // Ensure customer is authenticated
+        if (!Auth::guard('customer')->check()) {
+            return redirect()->route('customer.login')
+                ->with('error', 'Please sign in to complete your order.');
+        }
+    
+        $customer = Auth::guard('customer')->user();
+        
+        // Validation with customer data
         $request->validate([
-            'customer_name' => 'required|string|max:255',
             'phone' => 'required|string|max:20',
             'address' => 'required|string|max:500',
         ]);
-
+    
         $cart = $this->getCart();
         
         if (empty($cart)) {
             return redirect()->route('cart.index')
                 ->with('error', 'Your cart is empty.');
         }
-
+    
         // Start database transaction for order processing
         DB::beginTransaction();
         
@@ -80,41 +94,43 @@ class OrderController extends Controller
             // Calculate total and validate stock again
             $totalAmount = 0;
             $orderItems = [];
-
+    
             foreach ($cart as $item) {
                 $product = Product::lockForUpdate()->find($item['product_id']);
                 
                 if (!$product) {
                     throw new \Exception('Product not found: ' . $item['product_id']);
                 }
-
+    
                 if (!$product->hasStock($item['quantity'])) {
                     throw new \Exception($product->name . ' - Insufficient stock. Only ' . $product->stock_quantity . ' available.');
                 }
-
+    
                 $subtotal = $product->price * $item['quantity'];
                 $totalAmount += $subtotal;
-
+    
                 $orderItems[] = [
                     'product' => $product,
                     'quantity' => $item['quantity'],
-                    'price' => $product->price, // Store price at time of order
+                    'price' => $product->price,
                     'subtotal' => $subtotal
                 ];
-
+    
                 // Reduce stock
                 $product->reduceStock($item['quantity']);
             }
-
-            // Create the order
+    
+            // Create the order with customer relationship
             $order = Order::create([
-                'customer_name' => $request->customer_name,
+                'customer_id' => $customer->id,
+                'customer_name' => $customer->name,
+                'customer_email' => $customer->email,
                 'phone' => $request->phone,
                 'address' => $request->address,
                 'total_amount' => $totalAmount,
                 'status' => 'pending'
             ]);
-
+    
             // Create order items
             foreach ($orderItems as $item) {
                 OrderItem::create([
@@ -124,15 +140,15 @@ class OrderController extends Controller
                     'price' => $item['price']
                 ]);
             }
-
+    
             // Clear the cart
             Session::forget('cart');
-
+    
             DB::commit();
-
+    
             return redirect()->route('order.success', $order->id)
                 ->with('success', 'Order placed successfully! Order ID: #' . $order->id);
-
+    
         } catch (\Exception $e) {
             DB::rollBack();
             
@@ -141,6 +157,7 @@ class OrderController extends Controller
                 ->withInput();
         }
     }
+    
 
     /**
      * Order success page

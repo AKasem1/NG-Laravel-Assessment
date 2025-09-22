@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Product;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\Auth;
 
 class CartController extends Controller
 {
@@ -31,7 +32,7 @@ class CartController extends Controller
     }
 
     /**
-     * Add product to cart
+     * Add product to cart (No auth required)
      */
     public function add(Request $request, Product $product)
     {
@@ -79,7 +80,30 @@ class CartController extends Controller
     }
 
     /**
-     * Update cart item quantity
+     * Proceed to checkout (Authentication Required)
+     */
+    public function proceedToCheckout()
+    {
+        $cart = $this->getCart();
+        
+        if (empty($cart)) {
+            return redirect()->route('cart.index')
+                ->with('error', 'Your cart is empty. Add some products before checkout.');
+        }
+
+        // Check if customer is authenticated
+        if (!Auth::guard('customer')->check()) {
+            Session::put('intended_checkout', true);
+            return redirect()->route('customer.login')
+                ->with('info', 'Please sign in or create an account to proceed with checkout.');
+        }
+
+        // Redirect to actual checkout
+        return redirect()->route('checkout');
+    }
+
+    /**
+     * Update cart item quantity (No auth required)
      */
     public function update(Request $request, $productId)
     {
@@ -129,7 +153,7 @@ class CartController extends Controller
     }
 
     /**
-     * Remove product from cart
+     * Remove product from cart (No auth required)
      */
     public function remove($productId)
     {
