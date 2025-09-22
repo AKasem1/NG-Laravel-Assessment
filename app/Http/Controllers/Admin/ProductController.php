@@ -32,28 +32,26 @@ class ProductController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'description' => 'nullable|string',
+            'description' => 'nullable|string|max:1000',
             'price' => 'required|numeric|min:0',
             'stock_quantity' => 'required|integer|min:0',
             'category_id' => 'required|exists:categories,id',
-            'image' => 'nullable|url|max:500' // Expecting URL instead of file
+            'imgbb_url' => 'nullable|url', // Validate ImgBB URL
         ]);
-
-        $data = $request->all();
-
-        // If no image URL provided, you could set a default placeholder
-        if (empty($data['image'])) {
-            $data['image'] = null; // or set a default placeholder URL
-        }
-
-        $product = Product::create($data);
-
-        // Log the creation
-        $this->logProductChange($product, 'created', null, $product->toArray());
-
+    
+        Product::create([
+            'name' => $request->name,
+            'description' => $request->description,
+            'price' => $request->price,
+            'stock_quantity' => $request->stock_quantity,
+            'category_id' => $request->category_id,
+            'image' => $request->imgbb_url,
+        ]);
+    
         return redirect()->route('admin.products.index')
-            ->with('success', 'Product created successfully.');
+            ->with('success', 'Product created successfully!');
     }
+    
 
     public function show(Product $product)
     {
@@ -117,51 +115,6 @@ class ProductController extends Controller
 
         return redirect()->route('admin.products.index')
             ->with('success', 'Product restored successfully.');
-    }
-
-    /**
-     * API endpoint for image upload (for future cloud integration)
-     * This method can be called via AJAX from the form
-     */
-    public function uploadImage(Request $request)
-    {
-        $request->validate([
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif|max:2048'
-        ]);
-
-        if ($request->hasFile('image')) {
-            // TODO: Implement cloud upload logic here
-            // Example for future implementation:
-            // $imageUrl = $this->uploadToCloud($request->file('image'));
-            
-            // For now, return a placeholder response
-            $imageUrl = 'https://via.placeholder.com/300x300?text=Product+Image';
-            
-            return response()->json([
-                'success' => true,
-                'image_url' => $imageUrl,
-                'message' => 'Image uploaded successfully'
-            ]);
-        }
-
-        return response()->json([
-            'success' => false,
-            'message' => 'No image file provided'
-        ], 400);
-    }
-
-    /**
-     * Future method for cloud upload integration
-     */
-    private function uploadToCloud($file)
-    {
-        // TODO: Implement actual cloud upload logic
-        // Examples:
-        // - AWS S3: return Storage::disk('s3')->put('products', $file);
-        // - Cloudinary: return cloudinary()->upload($file->getRealPath())->getSecurePath();
-        // - Other cloud providers...
-        
-        return 'https://example-cloud-storage.com/products/' . $file->hashName();
     }
 
     /**

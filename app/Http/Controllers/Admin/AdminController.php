@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\Category;
+use App\Models\Customer;
 use App\Models\Order;
 use App\Models\ProductLog;
 use App\Models\User;
@@ -253,9 +254,9 @@ class AdminController extends Controller
     
             // Customer Statistics (Using Customer Model)
             'total_registered_customers' => Customer::count(),
-            'active_customers' => Customer::whereHas('orders')->count(), // Customers with at least one order
+            'active_customers' => Order::distinct('customer_name', 'phone')->count(), // Unique customers from orders
             'new_customers_today' => Customer::whereDate('created_at', $today)->count(),
-            'new_customers_week' => Customer::where('created_at', '>=', $thisWeek)->count(),
+            'new_customers_week' => Customer::where('created_at', '>=', $thisWeek)->count(), 
             'new_customers_month' => Customer::where('created_at', '>=', $thisMonth)->count(),
     
             // Guest Customer Statistics (From Orders - No Login Required Checkout)
@@ -382,6 +383,91 @@ class AdminController extends Controller
     {
         return Category::withCount('products')->orderBy('products_count', 'desc')->take(5)->get();
     }
+
+    /**
+ * Calculate conversion rate (orders vs unique visitors/customers)
+ * Since we don't have visitor tracking, we'll use a simplified calculation
+ */
+private function calculateConversionRate()
+{
+    $totalOrders = Order::count();
+    $uniqueCustomers = Order::distinct('customer_name', 'phone')->count();
+    
+    // If we have no customers, conversion rate is 0
+    if ($uniqueCustomers == 0) {
+        return 0;
+    }
+    
+    // Simple conversion rate: orders per unique customer
+    $conversionRate = ($totalOrders / $uniqueCustomers) * 100;
+    
+    // Cap at 100% and return rounded to 2 decimal places
+    return round(min($conversionRate, 100), 2);
+}
+
+/**
+ * Calculate customer retention rate
+ * Based on customers who placed more than one order
+ */
+private function calculateCustomerRetentionRate()
+{
+    $totalCustomers = Order::distinct('customer_name', 'phone')->count();
+    
+    if ($totalCustomers == 0) {
+        return 0;
+    }
+    
+    $repeatCustomers = \DB::table('orders')
+        ->select('customer_name', 'phone')
+        ->groupBy('customer_name', 'phone')
+        ->havingRaw('COUNT(*) > 1')
+        ->count();
+    
+    $retentionRate = ($repeatCustomers / $totalCustomers) * 100;
+    
+    return round($retentionRate, 2);
+}
+
+/**
+ * Calculate average order processing time
+ * Time from order creation to completion
+ */
+private function calculateAverageProcessingTime()
+{
+    $completedOrders = Order::where('status', 'completed')
+        ->whereNotNull('updated_at')
+        ->selectRaw('AVG(TIMESTAMPDIFF(HOUR, created_at, updated_at)) as avg_hours')
+        ->first();
+    
+    if (!$completedOrders || !$completedOrders->avg_hours) {
+        return 0;
+    }
+    
+    return round($completedOrders->avg_hours, 1);
+}
+
+/**
+ * Get monthly growth rate for orders
+ */
+private function calculateMonthlyGrowthRate()
+{
+    $currentMonth = Order::whereMonth('created_at', now()->month)
+        ->whereYear('created_at', now()->year)
+        ->count();
+    
+    $previousMonth = Order::whereMonth('created_at', now()->subMonth()->month)
+        ->whereYear('created_at', now()->subMonth()->year)
+        ->count();
+    
+    if ($previousMonth == 0) {
+        return $currentMonth > 0 ? 100 : 0;
+    }
+    
+    $growthRate = (($currentMonth - $previousMonth) / $previousMonth) * 100;
+    
+    return round($growthRate, 2);
+}
+
 
     /**
  * Admin: View all customers (from orders)

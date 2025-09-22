@@ -2,48 +2,69 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Product;
 use Illuminate\Http\Request;
+use App\Models\Product;
 use Illuminate\Support\Facades\Session;
-use Illuminate\Support\Facades\Auth;
 
 class CartController extends Controller
 {
     /**
-     * Display the cart page
+     * Display cart contents
      */
     public function index()
     {
         $cart = $this->getCart();
-        $cartItems = collect($cart)->map(function ($item) {
-            $product = Product::find($item['product_id']);
-            return [
-                'product' => $product,
+        $cartItems = collect($cart)->map(function ($item, $productId) {
+            $product = Product::with('category')->find($productId);
+            return $product ? [
+                'id' => $productId,
+                'name' => $product->name,
+                'price' => $product->price,
                 'quantity' => $item['quantity'],
-                'subtotal' => $product ? $product->price * $item['quantity'] : 0
-            ];
-        })->filter(function ($item) {
-            return $item['product'] !== null; // Remove items with deleted products
-        });
+                'image' => $product->image ?? null,
+                'category' => $product->category->name ?? 'Medical Supplies',
+                'description' => $product->description ?? null,
+                'stock_quantity' => $product->stock_quantity
+            ] : null;
+        })->filter();
 
-        $total = $cartItems->sum('subtotal');
+        // Convert to the format expected by the view
+        $formattedCart = $cartItems->mapWithKeys(function ($item) {
+            return [$item['id'] => $item];
+        })->toArray();
 
-        return view('cart.index', compact('cartItems', 'total'));
+        // Put cart in session format for view
+        Session::put('cart', $formattedCart);
+
+        // Get recommended products
+        $recommendedProducts = Product::with('category')
+            ->where('stock_quantity', '>', 0)
+            ->inRandomOrder()
+            ->limit(4)
+            ->get();
+
+        return view('cart.index', compact('recommendedProducts'));
     }
 
     /**
-     * Add product to cart (No auth required)
+     * Add product to cart
      */
     public function add(Request $request, Product $product)
     {
         $request->validate([
-            'quantity' => 'required|integer|min:1'
+            'quantity' => 'sometimes|integer|min:1'
         ]);
 
         $quantity = $request->input('quantity', 1);
 
         // Check stock availability
-        if (!$product->hasStock($quantity)) {
+        if ($product->stock_quantity < $quantity) {
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Insufficient stock. Only ' . $product->stock_quantity . ' items available.'
+                ], 400);
+            }
             return back()->with('error', 'Insufficient stock. Only ' . $product->stock_quantity . ' items available.');
         }
 
@@ -51,59 +72,50 @@ class CartController extends Controller
         $productId = $product->id;
 
         // Check if product already in cart
-        $existingIndex = collect($cart)->search(function ($item) use ($productId) {
-            return $item['product_id'] == $productId;
-        });
-
-        if ($existingIndex !== false) {
-            // Update quantity if product exists
-            $newQuantity = $cart[$existingIndex]['quantity'] + $quantity;
+        if (isset($cart[$productId])) {
+            $newQuantity = $cart[$productId]['quantity'] + $quantity;
             
             // Check stock for new total quantity
-            if (!$product->hasStock($newQuantity)) {
+            if ($product->stock_quantity < $newQuantity) {
+                if ($request->expectsJson()) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot add more items. Total would exceed available stock.'
+                    ], 400);
+                }
                 return back()->with('error', 'Cannot add more items. Total would exceed available stock.');
             }
             
-            $cart[$existingIndex]['quantity'] = $newQuantity;
+            $cart[$productId]['quantity'] = $newQuantity;
         } else {
             // Add new product to cart
-            $cart[] = [
-                'product_id' => $productId,
+            $cart[$productId] = [
+                'name' => $product->name,
+                'price' => $product->price,
                 'quantity' => $quantity,
+                'image' => $product->image,
+                'category' => $product->category->name ?? 'Medical Supplies',
+                'description' => $product->description,
+                'stock_quantity' => $product->stock_quantity,
                 'added_at' => now()->toDateTimeString()
             ];
         }
 
         $this->updateCart($cart);
 
+        if ($request->expectsJson()) {
+            return response()->json([
+                'success' => true,
+                'message' => $product->name . ' added to cart successfully!',
+                'cart_count' => $this->getCartCount()
+            ]);
+        }
+
         return back()->with('success', $product->name . ' added to cart successfully!');
     }
 
     /**
-     * Proceed to checkout (Authentication Required)
-     */
-    public function proceedToCheckout()
-    {
-        $cart = $this->getCart();
-        
-        if (empty($cart)) {
-            return redirect()->route('cart.index')
-                ->with('error', 'Your cart is empty. Add some products before checkout.');
-        }
-
-        // Check if customer is authenticated
-        if (!Auth::guard('customer')->check()) {
-            Session::put('intended_checkout', true);
-            return redirect()->route('customer.login')
-                ->with('info', 'Please sign in or create an account to proceed with checkout.');
-        }
-
-        // Redirect to actual checkout
-        return redirect()->route('checkout');
-    }
-
-    /**
-     * Update cart item quantity (No auth required)
+     * Update cart item quantity
      */
     public function update(Request $request, $productId)
     {
@@ -115,55 +127,53 @@ class CartController extends Controller
         $product = Product::findOrFail($productId);
         $cart = $this->getCart();
 
-        $itemIndex = collect($cart)->search(function ($item) use ($productId) {
-            return $item['product_id'] == $productId;
-        });
-
-        if ($itemIndex === false) {
-            return response()->json(['error' => 'Product not found in cart'], 404);
+        if (!isset($cart[$productId])) {
+            return response()->json(['success' => false, 'message' => 'Product not found in cart'], 404);
         }
 
         if ($quantity == 0) {
             // Remove item if quantity is 0
-            unset($cart[$itemIndex]);
-            $cart = array_values($cart); // Re-index array
+            unset($cart[$productId]);
         } else {
             // Check stock availability
-            if (!$product->hasStock($quantity)) {
+            if ($product->stock_quantity < $quantity) {
                 return response()->json([
-                    'error' => 'Insufficient stock. Only ' . $product->stock_quantity . ' items available.'
+                    'success' => false,
+                    'message' => 'Insufficient stock. Only ' . $product->stock_quantity . ' items available.'
                 ], 400);
             }
 
-            $cart[$itemIndex]['quantity'] = $quantity;
+            $cart[$productId]['quantity'] = $quantity;
         }
 
         $this->updateCart($cart);
 
-        // Return updated cart data for AJAX
-        $cartItems = $this->getCartItemsWithDetails();
-        $total = $cartItems->sum('subtotal');
-
         return response()->json([
             'success' => true,
             'message' => 'Cart updated successfully',
-            'cart_total' => number_format($total, 2),
-            'cart_count' => $cartItems->sum('quantity')
+            'cart_count' => $this->getCartCount()
         ]);
     }
 
     /**
-     * Remove product from cart (No auth required)
+     * Remove product from cart
      */
     public function remove($productId)
     {
         $cart = $this->getCart();
+        
+        if (isset($cart[$productId])) {
+            unset($cart[$productId]);
+            $this->updateCart($cart);
+        }
 
-        $cart = collect($cart)->filter(function ($item) use ($productId) {
-            return $item['product_id'] != $productId;
-        })->values()->toArray();
-
-        $this->updateCart($cart);
+        if (request()->expectsJson()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Product removed from cart successfully!',
+                'cart_count' => $this->getCartCount()
+            ]);
+        }
 
         return back()->with('success', 'Product removed from cart successfully!');
     }
@@ -174,6 +184,14 @@ class CartController extends Controller
     public function clear()
     {
         Session::forget('cart');
+
+        if (request()->expectsJson()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Cart cleared successfully!'
+            ]);
+        }
+
         return back()->with('success', 'Cart cleared successfully!');
     }
 
@@ -182,10 +200,30 @@ class CartController extends Controller
      */
     public function count()
     {
+        return response()->json(['count' => $this->getCartCount()]);
+    }
+
+    /**
+     * Quick add product to cart (for AJAX calls)
+     */
+    public function quickAdd(Request $request, Product $product)
+    {
+        return $this->add($request, $product);
+    }
+
+    /**
+     * Proceed to checkout (redirect to login if needed)
+     */
+    public function proceedToCheckout()
+    {
         $cart = $this->getCart();
-        $count = collect($cart)->sum('quantity');
         
-        return response()->json(['count' => $count]);
+        if (empty($cart)) {
+            return redirect()->route('cart.index')->with('error', 'Your cart is empty.');
+        }
+
+        // For now, redirect directly to checkout (guest checkout)
+        return redirect()->route('checkout');
     }
 
     /**
@@ -205,20 +243,11 @@ class CartController extends Controller
     }
 
     /**
-     * Get cart items with product details
+     * Get total cart item count
      */
-    private function getCartItemsWithDetails()
+    private function getCartCount()
     {
         $cart = $this->getCart();
-        return collect($cart)->map(function ($item) {
-            $product = Product::find($item['product_id']);
-            return [
-                'product' => $product,
-                'quantity' => $item['quantity'],
-                'subtotal' => $product ? $product->price * $item['quantity'] : 0
-            ];
-        })->filter(function ($item) {
-            return $item['product'] !== null;
-        });
+        return array_sum(array_column($cart, 'quantity'));
     }
 }
