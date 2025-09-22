@@ -237,7 +237,7 @@
 @push('scripts')
     <script>
         // ImgBB Upload Configuration
-        const imgbbApiKey = '94a510085448090374c9c304d4af9503';
+        const imgbbApiKey = '{{ config('services.imgbb.key') }}';
 
         // Character counters and live preview
         function updateCounters() {
